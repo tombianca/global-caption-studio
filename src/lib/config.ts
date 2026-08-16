@@ -2,7 +2,7 @@
 // All API keys stay on the server; nothing here is ever bundled to the client.
 
 function str(value: string | undefined, fallback: string): string {
-  return value && value.length > 0 ? value : fallback;
+  return value && value.trim().length > 0 ? value.trim() : fallback;
 }
 
 function num(value: string | undefined, fallback: number): number {
