@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
+    "vercel-build": "node scripts/switch-db.mjs postgres && prisma generate && next build",
     "start": "next start",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
