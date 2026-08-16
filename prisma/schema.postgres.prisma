@@ -1,0 +1,65 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String?
+  createdAt    DateTime @default(now())
+  projects     VideoProject[]
+}
+
+model VideoProject {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title            String
+  originalFileUrl  String
+  audioFileUrl     String?
+  burnedVideoUrl   String?
+  duration         Float?
+  originalLanguage String   @default("auto")
+  targetLanguages  Json     @default("[]")
+  status           String   @default("UPLOADING")
+  errorMessage     String?
+  captionStyle     Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  languages        CaptionLanguage[]
+  segments         CaptionSegment[]
+  @@index([userId])
+}
+
+model CaptionLanguage {
+  id             String       @id @default(cuid())
+  videoProjectId String
+  videoProject   VideoProject @relation(fields: [videoProjectId], references: [id], onDelete: Cascade)
+  languageCode   String
+  languageName   String
+  status         String       @default("PENDING")
+  fileUrl        String?
+  @@unique([videoProjectId, languageCode])
+  @@index([videoProjectId])
+}
+
+model CaptionSegment {
+  id              String       @id @default(cuid())
+  videoProjectId  String
+  videoProject    VideoProject @relation(fields: [videoProjectId], references: [id], onDelete: Cascade)
+  segmentNumber   Int
+  startTime       Float
+  endTime         Float
+  originalText    String
+  translatedTexts Json?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  @@unique([videoProjectId, segmentNumber])
+  @@index([videoProjectId])
+}

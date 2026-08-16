@@ -1,0 +1,83 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gcs
+      POSTGRES_PASSWORD: gcs
+      POSTGRES_DB: gcs
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U gcs']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://gcs:gcs@db:5432/gcs?schema=public
+      AUTH_SECRET: ${AUTH_SECRET:-change-me-in-production}
+      REDIS_URL: redis://redis:6379
+      # S3-compatible storage (optional; leave empty to use the local volume)
+      STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:-}
+      STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:-}
+      STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:-}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-}
+      # Transcription / translation providers (optional; mock when unset)
+      TRANSCRIPTION_API_KEY: ${TRANSCRIPTION_API_KEY:-}
+      TRANSCRIPTION_BASE_URL: ${TRANSCRIPTION_BASE_URL:-https://api.openai.com/v1}
+      TRANSCRIPTION_MODEL: ${TRANSCRIPTION_MODEL:-whisper-1}
+      TRANSLATION_PROVIDER: ${TRANSLATION_PROVIDER:-mock}
+      TRANSLATION_API_KEY: ${TRANSLATION_API_KEY:-}
+      GOOGLE_TRANSLATION_API_KEY: ${GOOGLE_TRANSLATION_API_KEY:-}
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-2048}
+    volumes:
+      - storage:/app/.storage
+    ports:
+      - '3000:3000'
+    restart: unless-stopped
+
+  # Runs the background job worker (BullMQ) for transcription/translation/export.
+  worker:
+    build: .
+    command: npm run worker
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://gcs:gcs@db:5432/gcs?schema=public
+      AUTH_SECRET: ${AUTH_SECRET:-change-me-in-production}
+      REDIS_URL: redis://redis:6379
+      STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:-}
+      STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:-}
+      STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:-}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-}
+      TRANSCRIPTION_API_KEY: ${TRANSCRIPTION_API_KEY:-}
+      TRANSCRIPTION_BASE_URL: ${TRANSCRIPTION_BASE_URL:-https://api.openai.com/v1}
+      TRANSCRIPTION_MODEL: ${TRANSCRIPTION_MODEL:-whisper-1}
+      TRANSLATION_PROVIDER: ${TRANSLATION_PROVIDER:-mock}
+      TRANSLATION_API_KEY: ${TRANSLATION_API_KEY:-}
+      GOOGLE_TRANSLATION_API_KEY: ${GOOGLE_TRANSLATION_API_KEY:-}
+    volumes:
+      - storage:/app/.storage
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  storage:
