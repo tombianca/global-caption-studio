@@ -53,6 +53,7 @@ export const config = {
 };
 
 export const isS3Configured = Boolean(config.storage.endpoint && config.storage.accessKey);
+export const isBlobConfigured = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
 export const isRedisConfigured = Boolean(config.redisUrl);
 export const isGoogleConfigured = Boolean(config.google.clientId && config.google.clientSecret);
 export const isTranscriptionConfigured = Boolean(config.transcription.apiKey);

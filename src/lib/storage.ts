@@ -1,14 +1,15 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { config, isS3Configured } from './config';
+import { config, isS3Configured, isBlobConfigured } from './config';
 
 export interface StorageAdapter {
-  put(key: string, data: Buffer, contentType: string): Promise<void>;
+  /** Store data and return a locator (a key, or a full URL for blob storage). */
+  put(key: string, data: Buffer, contentType: string): Promise<string>;
   get(key: string): Promise<Buffer | null>;
   delete(key: string): Promise<void>;
   /** Client-facing URL for a stored file (signed for S3, API route for local). */
   getFileUrl(key: string, projectId: string): Promise<string>;
-  /** Resolve to a local filesystem path (downloads into `dir` for S3). */
+  /** Resolve to a local filesystem path (downloads into `dir` for S3/blob). */
   toLocalFile(key: string, dir: string): Promise<string>;
 }
 
@@ -20,10 +21,11 @@ class LocalStorageAdapter implements StorageAdapter {
     return path.join(LOCAL_ROOT, safe);
   }
 
-  async put(key: string, data: Buffer, _contentType: string): Promise<void> {
+  async put(key: string, data: Buffer, _contentType: string): Promise<string> {
     const full = this.resolve(key);
     await fs.mkdir(path.dirname(full), { recursive: true });
     await fs.writeFile(full, data);
+    return key;
   }
 
   async get(key: string): Promise<Buffer | null> {
@@ -75,7 +77,7 @@ class S3StorageAdapter implements StorageAdapter {
     return this.s3;
   }
 
-  async put(key: string, data: Buffer, contentType: string): Promise<void> {
+  async put(key: string, data: Buffer, contentType: string): Promise<string> {
     const { client, PutObjectCommand } = await this.client();
     await client.send(
       new PutObjectCommand({
@@ -85,6 +87,7 @@ class S3StorageAdapter implements StorageAdapter {
         ContentType: contentType,
       }),
     );
+    return key;
   }
 
   async get(key: string): Promise<Buffer | null> {
@@ -121,6 +124,50 @@ class S3StorageAdapter implements StorageAdapter {
   }
 }
 
-export const storage: StorageAdapter = isS3Configured
-  ? new S3StorageAdapter()
-  : new LocalStorageAdapter();
+/** Vercel Blob — the app stores the public URL as the locator. */
+class VercelBlobStorageAdapter implements StorageAdapter {
+  private isUrl(locator: string): boolean {
+    return /^https?:\/\//.test(locator);
+  }
+
+  async put(key: string, data: Buffer, contentType: string): Promise<string> {
+    const { put } = await import('@vercel/blob');
+    const res = await put(key, data, { contentType, access: 'public', addRandomSuffix: false });
+    return res.url;
+  }
+
+  async get(locator: string): Promise<Buffer | null> {
+    try {
+      const res = await fetch(locator);
+      if (!res.ok) return null;
+      const buf = await res.arrayBuffer();
+      return Buffer.from(buf);
+    } catch {
+      return null;
+    }
+  }
+
+  async delete(locator: string): Promise<void> {
+    const { del } = await import('@vercel/blob');
+    await del(locator).catch(() => {});
+  }
+
+  async getFileUrl(locator: string): Promise<string> {
+    return locator; // already a public URL
+  }
+
+  async toLocalFile(locator: string, dir: string): Promise<string> {
+    const buf = await this.get(locator);
+    if (!buf) throw new Error(`Object not found: ${locator}`);
+    const name = path.basename(new URL(locator).pathname) || 'file';
+    const full = path.join(dir, name);
+    await fs.writeFile(full, buf);
+    return full;
+  }
+}
+
+export const storage: StorageAdapter = isBlobConfigured
+  ? new VercelBlobStorageAdapter()
+  : isS3Configured
+    ? new S3StorageAdapter()
+    : new LocalStorageAdapter();

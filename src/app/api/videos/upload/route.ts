@@ -51,8 +51,8 @@ export async function POST(req: NextRequest) {
     try {
       const key = `${project.id}/original.${validation.ext}`;
       const buffer = Buffer.from(await file.arrayBuffer());
-      await storage.put(key, buffer, file.type || 'application/octet-stream');
-      await prisma.videoProject.update({ where: { id: project.id }, data: { originalFileUrl: key } });
+      const stored = await storage.put(key, buffer, file.type || 'application/octet-stream');
+      await prisma.videoProject.update({ where: { id: project.id }, data: { originalFileUrl: stored } });
     } catch (err) {
       await prisma.videoProject.delete({ where: { id: project.id } }).catch(() => {});
       console.error('[gcs] upload storage failed:', err);

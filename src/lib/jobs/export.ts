@@ -65,8 +65,8 @@ registerJob('export', async (payload, report) => {
       report(90, 'Saving...');
       const outBuffer = await fs.readFile(outPath);
       const key = `exports/${videoId}/burned-${slugify(lang)}.mp4`;
-      await storage.put(key, outBuffer, 'video/mp4');
-      await prisma.videoProject.update({ where: { id: videoId }, data: { burnedVideoUrl: key } });
+      const stored = await storage.put(key, outBuffer, 'video/mp4');
+      await prisma.videoProject.update({ where: { id: videoId }, data: { burnedVideoUrl: stored } });
     });
 
     await prisma.videoProject.update({ where: { id: videoId }, data: { status: 'READY' } });
