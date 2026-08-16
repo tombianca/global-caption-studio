@@ -1,0 +1,14 @@
+# Vercel upload ignore — never send local-only/dependency files to the build.
+node_modules
+.next
+.git
+.env
+.env.local
+.storage
+*.db
+*.db-journal
+.vercel
+.agents
+.claude
+agent
+skills-lock.json
