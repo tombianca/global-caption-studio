@@ -44,3 +44,12 @@ prisma/dev.db
 
 # local video/audio storage
 .storage
+
+.vercel
+.env*
+
+# Vercel agent skills
+.agents/
+.claude/
+agent/
+skills-lock.json
