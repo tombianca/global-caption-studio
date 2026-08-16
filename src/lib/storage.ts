@@ -1,10 +1,15 @@
-import { promises as fs } from 'node:fs';
+import { promises as fs, createWriteStream } from 'node:fs';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import { config, isS3Configured, isBlobConfigured } from './config';
 
+/** A body to store: an in-memory buffer or a streaming web ReadableStream. */
+export type PutBody = Buffer | ReadableStream<Uint8Array>;
+
 export interface StorageAdapter {
   /** Store data and return a locator (a key, or a full URL for blob storage). */
-  put(key: string, data: Buffer, contentType: string): Promise<string>;
+  put(key: string, data: PutBody, contentType: string): Promise<string>;
   get(key: string): Promise<Buffer | null>;
   delete(key: string): Promise<void>;
   /** Client-facing URL for a stored file (signed for S3, API route for local). */
@@ -15,16 +20,24 @@ export interface StorageAdapter {
 
 const LOCAL_ROOT = path.resolve(process.cwd(), process.env.STORAGE_DIR || '.storage');
 
+async function streamToFile(stream: ReadableStream<Uint8Array>, full: string): Promise<void> {
+  await pipeline(Readable.fromWeb(stream as any), createWriteStream(full));
+}
+
 class LocalStorageAdapter implements StorageAdapter {
   private resolve(key: string): string {
     const safe = path.normalize(key).replace(/^(\.\.[/\\])+/, '');
     return path.join(LOCAL_ROOT, safe);
   }
 
-  async put(key: string, data: Buffer, _contentType: string): Promise<string> {
+  async put(key: string, data: PutBody, _contentType: string): Promise<string> {
     const full = this.resolve(key);
     await fs.mkdir(path.dirname(full), { recursive: true });
-    await fs.writeFile(full, data);
+    if (data instanceof Uint8Array) {
+      await fs.writeFile(full, data);
+    } else {
+      await streamToFile(data, full);
+    }
     return key;
   }
 
@@ -77,13 +90,14 @@ class S3StorageAdapter implements StorageAdapter {
     return this.s3;
   }
 
-  async put(key: string, data: Buffer, contentType: string): Promise<string> {
+  async put(key: string, data: PutBody, contentType: string): Promise<string> {
     const { client, PutObjectCommand } = await this.client();
+    const body = data instanceof Uint8Array ? data : Readable.fromWeb(data as any);
     await client.send(
       new PutObjectCommand({
         Bucket: config.storage.bucket,
         Key: key,
-        Body: data,
+        Body: body,
         ContentType: contentType,
       }),
     );
@@ -126,13 +140,9 @@ class S3StorageAdapter implements StorageAdapter {
 
 /** Vercel Blob — the app stores the public URL as the locator. */
 class VercelBlobStorageAdapter implements StorageAdapter {
-  private isUrl(locator: string): boolean {
-    return /^https?:\/\//.test(locator);
-  }
-
-  async put(key: string, data: Buffer, contentType: string): Promise<string> {
+  async put(key: string, data: PutBody, contentType: string): Promise<string> {
     const { put } = await import('@vercel/blob');
-    const res = await put(key, data, { contentType, access: 'public', addRandomSuffix: false });
+    const res = await put(key, data as any, { contentType, access: 'public', addRandomSuffix: false });
     return res.url;
   }
 

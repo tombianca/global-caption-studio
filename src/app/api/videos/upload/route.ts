@@ -1,20 +1,20 @@
 import type { NextRequest } from 'next/server';
+import { randomUUID } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import { storage } from '@/lib/storage';
 import { requireUser, json, handleRouteError, ApiError } from '@/lib/api';
 import { validateVideoFile, sanitizeTitle } from '@/lib/validation';
 import { toVideoDTO } from '@/lib/dto';
 
-function parseTargetLanguages(value: FormDataEntryValue | null): string[] {
+function parseTargetLanguages(value: string | null): string[] {
   if (!value) return [];
-  const s = String(value);
   try {
-    const parsed = JSON.parse(s);
+    const parsed = JSON.parse(value);
     if (Array.isArray(parsed)) return parsed.filter((x): x is string => typeof x === 'string');
   } catch {
     /* fall through to comma split */
   }
-  return s.split(',').map((x) => x.trim()).filter(Boolean);
+  return value.split(',').map((x) => x.trim()).filter(Boolean);
 }
 
 export async function POST(req: NextRequest) {
@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
 
     const title = sanitizeTitle(String(form.get('title') ?? 'Untitled video'));
     const originalLanguage = String(form.get('originalLanguage') ?? 'auto');
-    const targetLanguages = parseTargetLanguages(form.get('targetLanguages'));
+    const targetLanguages = parseTargetLanguages(String(form.get('targetLanguages') ?? ''));
     const captionFormat = String(form.get('captionFormat') ?? 'SRT');
 
     const validation = validateVideoFile({ name: file.name, type: file.type, size: file.size });
@@ -37,26 +37,36 @@ export async function POST(req: NextRequest) {
       throw new ApiError(400, validation.message, validation.code);
     }
 
-    const project = await prisma.videoProject.create({
-      data: {
-        userId: user.id,
-        title,
-        originalFileUrl: '',
-        originalLanguage,
-        targetLanguages,
-        status: 'UPLOADING',
-      },
-    });
-
+    // Store the file FIRST (streamed, no full in-memory copy), then create the
+    // project pointing at it — so a mid-upload failure can never leave an
+    // orphaned "UPLOADING" project with no file.
+    const id = randomUUID();
+    const key = `${id}/original.${validation.ext}`;
+    let stored: string;
     try {
-      const key = `${project.id}/original.${validation.ext}`;
-      const buffer = Buffer.from(await file.arrayBuffer());
-      const stored = await storage.put(key, buffer, file.type || 'application/octet-stream');
-      await prisma.videoProject.update({ where: { id: project.id }, data: { originalFileUrl: stored } });
+      stored = await storage.put(key, file.stream(), file.type || 'application/octet-stream');
     } catch (err) {
-      await prisma.videoProject.delete({ where: { id: project.id } }).catch(() => {});
       console.error('[gcs] upload storage failed:', err);
       throw new ApiError(500, 'Failed to store the uploaded file. Please try again.', 'UPLOAD_FAILED');
+    }
+
+    let project;
+    try {
+      project = await prisma.videoProject.create({
+        data: {
+          id,
+          userId: user.id,
+          title,
+          originalFileUrl: stored,
+          originalLanguage,
+          targetLanguages,
+          status: 'UPLOADING',
+        },
+      });
+    } catch (err) {
+      await storage.delete(stored).catch(() => {});
+      console.error('[gcs] project create failed:', err);
+      throw new ApiError(500, 'Failed to create the project. Please try again.', 'UPLOAD_FAILED');
     }
 
     const fresh = await prisma.videoProject.findUniqueOrThrow({
