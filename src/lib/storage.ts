@@ -1,4 +1,4 @@
-import { promises as fs, createWriteStream } from 'node:fs';
+import { promises as fs, createWriteStream, createReadStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
@@ -11,6 +11,8 @@ export interface StorageAdapter {
   /** Store data and return a locator (a key, or a full URL for blob storage). */
   put(key: string, data: PutBody, contentType: string): Promise<string>;
   get(key: string): Promise<Buffer | null>;
+  /** Stream a stored file without loading it fully into memory. */
+  getStream(key: string): Promise<ReadableStream<Uint8Array> | null>;
   delete(key: string): Promise<void>;
   /** Client-facing URL for a stored file (signed for S3, API route for local). */
   getFileUrl(key: string, projectId: string): Promise<string>;
@@ -47,6 +49,16 @@ class LocalStorageAdapter implements StorageAdapter {
     } catch {
       return null;
     }
+  }
+
+  async getStream(key: string): Promise<ReadableStream<Uint8Array> | null> {
+    const full = this.resolve(key);
+    try {
+      await fs.access(full);
+    } catch {
+      return null;
+    }
+    return Readable.toWeb(createReadStream(full)) as ReadableStream<Uint8Array>;
   }
 
   async delete(key: string): Promise<void> {
@@ -115,6 +127,19 @@ class S3StorageAdapter implements StorageAdapter {
     }
   }
 
+  async getStream(key: string): Promise<ReadableStream<Uint8Array> | null> {
+    const { client, GetObjectCommand } = await this.client();
+    try {
+      const res = await client.send(new GetObjectCommand({ Bucket: config.storage.bucket, Key: key }));
+      const body: any = res.Body;
+      if (body?.getReader) return body as ReadableStream<Uint8Array>;
+      if (body?.pipe) return Readable.toWeb(body) as ReadableStream<Uint8Array>;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   async delete(key: string): Promise<void> {
     const { client, DeleteObjectCommand } = await this.client();
     await client
@@ -152,6 +177,16 @@ class VercelBlobStorageAdapter implements StorageAdapter {
       if (!res.ok) return null;
       const buf = await res.arrayBuffer();
       return Buffer.from(buf);
+    } catch {
+      return null;
+    }
+  }
+
+  async getStream(locator: string): Promise<ReadableStream<Uint8Array> | null> {
+    try {
+      const res = await fetch(locator);
+      if (!res.ok || !res.body) return null;
+      return res.body;
     } catch {
       return null;
     }

@@ -20,18 +20,22 @@ export async function GET(
     const f = (format ?? '').toLowerCase();
     const lang = req.nextUrl.searchParams.get('language') ?? project.originalLanguage;
 
-    // Burned video download.
+    // Burned video download — streamed from disk (no full-file memory spike).
     if (f === 'video') {
       const key = project.burnedVideoUrl;
       if (!key) throw new ApiError(404, 'Burned video has not been generated yet.', 'NOT_FOUND');
+      const headers = {
+        'Content-Type': 'video/mp4',
+        'Content-Disposition': `attachment; filename="${slugify(project.title)}-captioned.mp4"`,
+      };
+      const stream = await storage.getStream(key);
+      if (stream) {
+        return new Response(stream, { headers });
+      }
+      // Fallback for adapters without streaming support.
       const data = await storage.get(key);
       if (!data) throw new ApiError(404, 'Burned video not found.', 'NOT_FOUND');
-      return new Response(new Uint8Array(data), {
-        headers: {
-          'Content-Type': 'video/mp4',
-          'Content-Disposition': `attachment; filename="${slugify(project.title)}-captioned.mp4"`,
-        },
-      });
+      return new Response(new Uint8Array(data), { headers });
     }
 
     const segments = await prisma.captionSegment.findMany({
