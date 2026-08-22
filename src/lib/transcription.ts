@@ -159,7 +159,7 @@ class LocalWhisperTranscriber implements Transcriber {
 
     const audio = readWavToFloat32(audioPath);
     const output = await transcriber(audio, {
-      return_timestamps: true,
+      return_timestamps: 'word',
       chunk_length_s: 30,
       stride_length_s: 5,
     });
@@ -170,16 +170,39 @@ class LocalWhisperTranscriber implements Transcriber {
         ? [output.chunks]
         : [];
 
-    let segments = rawChunks
-      .map((c, i) => ({
-        id: `local-${i}`,
-        segmentNumber: i + 1,
-        startTime: round3(Number(c?.timestamp?.[0]) || 0),
-        endTime: round3(Number(c?.timestamp?.[1]) || duration),
-        originalText: String(c?.text ?? '').trim(),
-        translatedTexts: {},
-      }))
-      .filter((s) => s.originalText.length > 0);
+    // With `return_timestamps: 'word'`, each chunk IS a word (text + timestamp).
+    // Some providers return segment-level chunks with a nested words[] array —
+    // handle both shapes.
+    const words = rawChunks.flatMap((c) => {
+      if (Array.isArray(c?.words) && c.words.length) {
+        return c.words.map((w: any) => ({
+          text: String(w?.word ?? w?.text ?? '').trim(),
+          start: Number(w?.start ?? w?.timestamp?.[0]) || 0,
+          end: Number(w?.end ?? w?.timestamp?.[1]) || 0,
+        }));
+      }
+      const t = String(c?.text ?? '').trim();
+      if (t && Array.isArray(c?.timestamp)) {
+        return [{ text: t, start: Number(c.timestamp[0]) || 0, end: Number(c.timestamp[1]) || 0 }];
+      }
+      return [];
+    });
+
+    let segments: CaptionSegmentDTO[] = [];
+    if (words.length) {
+      segments = groupWordsIntoSegments(words, duration);
+    } else {
+      segments = rawChunks
+        .map((c, i) => ({
+          id: `local-${i}`,
+          segmentNumber: i + 1,
+          startTime: round3(Number(c?.timestamp?.[0]) || 0),
+          endTime: round3(Number(c?.timestamp?.[1]) || duration),
+          originalText: String(c?.text ?? '').trim(),
+          translatedTexts: {},
+        }))
+        .filter((s) => s.originalText.length > 0);
+    }
 
     if (!segments.length && typeof output?.text === 'string' && output.text.trim()) {
       segments = splitPlainText(output.text.trim(), duration);
@@ -216,6 +239,7 @@ function readWavToFloat32(path: string): Float32Array {
   return samples;
 }
 
+/** Split a plain-text transcript into evenly-timed segments (fallback). */
 function splitPlainText(text: string, duration: number): CaptionSegmentDTO[] {
   const sentences = text
     .split(/(?<=[.!?。！？])\s+|\n+/)
@@ -231,6 +255,60 @@ function splitPlainText(text: string, duration: number): CaptionSegmentDTO[] {
     originalText: s,
     translatedTexts: {},
   }));
+}
+
+interface WordToken {
+  text: string;
+  start: number;
+  end: number;
+}
+
+/**
+ * Group word-level timestamps into caption segments that match how a person
+ * actually speaks: split at natural pauses (>= 0.5s) and cap each caption at
+ * ~2 lines (~84 chars). Each segment is bounded by the exact first/last word
+ * timestamps (no leading/trailing silence).
+ */
+function groupWordsIntoSegments(words: WordToken[], duration: number): CaptionSegmentDTO[] {
+  const cleaned = words.filter((w) => w.text && w.end > w.start);
+  if (!cleaned.length) return [];
+
+  const segments: CaptionSegmentDTO[] = [];
+  let cur: WordToken[] = [];
+  let curText = '';
+  const flush = (isLast: boolean) => {
+    if (!cur.length) return;
+    const start = cur[0].start;
+    const end = isLast ? Math.min(duration, cur[cur.length - 1].end) : cur[cur.length - 1].end;
+    segments.push({
+      id: `local-${segments.length}`,
+      segmentNumber: segments.length + 1,
+      startTime: round3(Math.max(0, start)),
+      endTime: round3(Math.max(start + 0.1, end)),
+      originalText: curText.trim(),
+      translatedTexts: {},
+    });
+    cur = [];
+    curText = '';
+  };
+
+  for (let i = 0; i < cleaned.length; i++) {
+    const w = cleaned[i];
+    const prev = cur[cur.length - 1];
+    const gap = prev ? w.start - prev.end : 0;
+    const wouldBeLong = curText.length + w.text.length > 84;
+
+    // Start a NEW segment at a real pause (>= 0.4s) OR when the line would get
+    // too long. This matches natural speech breaks (e.g. after "park,").
+    if (cur.length && (gap >= 0.4 || wouldBeLong)) {
+      flush(false);
+    }
+    cur.push(w);
+    curText += (curText ? ' ' : '') + w.text;
+  }
+  flush(true);
+
+  return segments.filter((s) => s.originalText.length > 0);
 }
 
 export function resolveTranscriptionProvider(): 'api' | 'local' | 'mock' {
